@@ -598,10 +598,16 @@ async def build_public_tmp(
     This endpoint is specifically for public flows that don't require authentication.
     It uses a client_id cookie to create a deterministic flow ID for tracking purposes.
 
+    Security Note:
+    - The 'data' parameter is accepted for API compatibility but is ALWAYS IGNORED
+    - Public flows must execute the stored flow definition to prevent tampering
+    - Any attempt to override the flow definition is logged and rejected
+
     The endpoint:
     1. Verifies the requested flow is marked as public in the database
     2. Creates a deterministic UUID based on client_id and flow_id
     3. Uses the flow owner's permissions to build the flow
+    4. Always loads the flow definition from the database (ignores user-provided data)
 
     Requirements:
     - The flow must be marked as PUBLIC in the database
@@ -611,7 +617,7 @@ async def build_public_tmp(
         flow_id: UUID of the public flow to build
         background_tasks: Background tasks manager
         inputs: Optional input values for the flow
-        data: Optional flow data
+        data: Optional flow data (IGNORED for security - public flows always use stored definition)
         files: Optional files to include
         stop_component_id: Optional ID of component to stop at
         start_component_id: Optional ID of component to start from
@@ -625,16 +631,29 @@ async def build_public_tmp(
         Dict with job_id that can be used to poll for build status
     """
     try:
+        # Security: Validate and reject any attempt to override flow definition
+        # Public flows must always execute the owner's stored definition
+        if data is not None:
+            client_id = request.cookies.get("client_id")
+            ip_address = request.client.host if request.client else "unknown"
+            await logger.awarning(
+                f"Security: Rejected attempt to provide custom flow data for public flow {flow_id}. "
+                f"Client: {client_id}, IP: {ip_address}"
+            )
+            # Explicitly set to None to force database loading
+            data = None
+
         # Verify this is a public flow and get the associated user
         client_id = request.cookies.get("client_id")
         owner_user, new_flow_id = await verify_public_flow_and_get_user(flow_id=flow_id, client_id=client_id)
 
         # Start the flow build using the new flow ID
+        # data is always None for public flows to prevent tampering
         job_id = await start_flow_build(
             flow_id=new_flow_id,
             background_tasks=background_tasks,
             inputs=inputs,
-            data=data,
+            data=None,  # Always None - public flows load from database only
             files=files,
             stop_component_id=stop_component_id,
             start_component_id=start_component_id,

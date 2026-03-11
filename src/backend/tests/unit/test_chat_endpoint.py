@@ -432,3 +432,78 @@ async def test_cancel_build_with_cancelled_error(client, json_memory_chatbot_no_
     finally:
         # Restore the original function to avoid affecting other tests
         monkeypatch.setattr(langflow.api.v1.chat, "cancel_flow_build", original_cancel_flow_build)
+
+
+@pytest.mark.benchmark
+async def test_build_public_tmp_rejects_custom_data(client, json_memory_chatbot_no_llm, logged_in_headers, capsys):
+    """Test that build_public_tmp endpoint rejects custom flow data for security.
+
+    Security Test: Verifies that when a user attempts to provide custom flow data
+    to the public flow endpoint, it is rejected and logged for security monitoring.
+    This prevents attackers from injecting malicious flow definitions.
+    """
+    # Create a flow
+    flow_id = await create_flow(client, json_memory_chatbot_no_llm, logged_in_headers)
+
+    # Create malicious flow data
+    malicious_data = {"nodes": [{"id": "malicious", "data": {"type": "CustomComponent"}}], "edges": []}
+
+    # Set a client_id cookie
+    client.cookies.set("client_id", "test-security-client-123")
+
+    # Attempt to build with malicious data
+    await client.post(
+        f"api/v1/build_public_tmp/{flow_id}/flow",
+        json={
+            "inputs": {"session": "test_session"},
+            "data": malicious_data,  # Attempt to inject malicious data
+        },
+        headers={"Content-Type": "application/json"},
+    )
+
+    # Capture the logs
+    captured = capsys.readouterr()
+
+    # Verify security warning was logged
+    assert "Security: Rejected attempt to provide custom flow data" in captured.out, (
+        "Expected security warning to be logged"
+    )
+    assert str(flow_id) in captured.out, "Log should contain flow_id"
+    assert "test-security-client-123" in captured.out, "Log should contain client_id"
+    assert "127.0.0.1" in captured.out, "Log should contain IP address"
+
+
+@pytest.mark.benchmark
+async def test_build_public_tmp_data_parameter_is_ignored(
+    client, json_memory_chatbot_no_llm, logged_in_headers, capsys
+):
+    """Test that data parameter is always ignored for public flows.
+
+    Security Test: Verifies that even when data is provided, it's ignored and logged.
+    This is a critical security feature to prevent flow definition tampering.
+    """
+    # Create a flow
+    flow_id = await create_flow(client, json_memory_chatbot_no_llm, logged_in_headers)
+
+    # Set a client_id cookie
+    client.cookies.set("client_id", "test-data-ignored-client")
+
+    # Attempt to provide data parameter
+    await client.post(
+        f"api/v1/build_public_tmp/{flow_id}/flow",
+        json={
+            "inputs": {"session": "test_session"},
+            "data": {"nodes": [{"id": "custom"}], "edges": []},  # Should be ignored
+        },
+        headers={"Content-Type": "application/json"},
+    )
+
+    # Capture the logs
+    captured = capsys.readouterr()
+
+    # Verify security warning was logged
+    assert "Security: Rejected attempt to provide custom flow data" in captured.out, (
+        "Expected security warning when data parameter is provided"
+    )
+    assert str(flow_id) in captured.out, "Log should contain flow_id"
+    assert "test-data-ignored-client" in captured.out, "Log should contain client_id"
